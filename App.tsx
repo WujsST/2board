@@ -54,14 +54,20 @@ function App() {
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId) || workspaces[0];
 
   // Helper to update current workspace blocks/connections
+  // MODIFIED: Arguments are now optional to prevent overwriting with stale state
   const updateWorkspaceState = (
-      newBlocks: BlockData[] | ((prev: BlockData[]) => BlockData[]), 
+      newBlocks?: BlockData[] | ((prev: BlockData[]) => BlockData[]), 
       newConnections?: Connection[] | ((prev: Connection[]) => Connection[])
   ) => {
       setWorkspaces(prevWorkspaces => {
           return prevWorkspaces.map(ws => {
               if (ws.id === activeWorkspaceId) {
-                  const updatedBlocks = typeof newBlocks === 'function' ? newBlocks(ws.blocks) : newBlocks;
+                  // If newBlocks is provided, use it. Otherwise, keep existing ws.blocks (which is the latest state in this updater)
+                  const updatedBlocks = newBlocks 
+                    ? (typeof newBlocks === 'function' ? newBlocks(ws.blocks) : newBlocks)
+                    : ws.blocks;
+                  
+                  // Same logic for connections
                   const updatedConnections = newConnections 
                     ? (typeof newConnections === 'function' ? newConnections(ws.connections) : newConnections)
                     : ws.connections;
@@ -76,8 +82,10 @@ function App() {
   // Local proxies for cleaner code in render (mimicking old state)
   const blocks = activeWorkspace.blocks;
   const connections = activeWorkspace.connections;
-  const setBlocks = (val: any) => updateWorkspaceState(val);
-  const setConnections = (val: any) => updateWorkspaceState(blocks, val);
+  
+  // MODIFIED: Pass undefined for the part of state we are NOT updating
+  const setBlocks = (val: any) => updateWorkspaceState(val, undefined);
+  const setConnections = (val: any) => updateWorkspaceState(undefined, val);
 
   // Persist to local storage
   useEffect(() => {
@@ -181,8 +189,12 @@ function App() {
   };
 
   const deleteBlock = (id: string) => {
-    setBlocks((prev: BlockData[]) => prev.filter(b => b.id !== id));
-    setConnections((prev: Connection[]) => prev.filter(c => c.from !== id && c.to !== id));
+    // MODIFIED: Perform atomic update of both blocks and connections
+    updateWorkspaceState(
+        (prevBlocks) => prevBlocks.filter(b => b.id !== id),
+        (prevConns) => prevConns.filter(c => c.from !== id && c.to !== id)
+    );
+    
     setSelectedBlockIds(prev => {
       const next = new Set(prev);
       next.delete(id);
@@ -293,6 +305,7 @@ function App() {
           createdAt: Date.now(),
           tags: ['saved-chat']
       };
+      // These will now queue correctly due to functional updates in setWorkspaces
       setBlocks((prev: BlockData[]) => [...prev, newBlock]);
       setConnections((prev: Connection[]) => [...prev, { id: `auto-${Date.now()}`, from: sourceId, to: newBlock.id }]);
   };
@@ -384,8 +397,6 @@ function App() {
       }));
 
       // Update Local State
-      // Merge with existing docs, avoid duplicates based on sourceId? 
-      // For simplicity, we append or replace. Let's append but filter duplicates by sourceId if updated.
       const existingDocs = block.ragIndexedDocs || [];
       const updatedDocs = [...existingDocs];
       

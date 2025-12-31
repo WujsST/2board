@@ -91,6 +91,7 @@ export const ListView: React.FC<ListViewProps> = ({ blocks, onDelete, onUpdateSt
                                                     block.status === 'in-progress' ? 'bg-blue-50 text-blue-700 border-blue-200' :
                                                     'bg-slate-50 text-slate-600 border-slate-200'
                                                 }`}
+                                                onClick={(e) => e.stopPropagation()}
                                             >
                                                 <option value="todo">To Do</option>
                                                 <option value="in-progress">In Progress</option>
@@ -99,8 +100,11 @@ export const ListView: React.FC<ListViewProps> = ({ blocks, onDelete, onUpdateSt
                                         </td>
                                         <td className="p-4 text-center">
                                             <button 
-                                                onClick={() => onDelete(block.id)}
-                                                className="w-8 h-8 rounded-full hover:bg-red-50 text-slate-300 hover:text-red-500 transition flex items-center justify-center"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onDelete(block.id);
+                                                }}
+                                                className="w-8 h-8 rounded-full hover:bg-red-50 text-slate-300 hover:text-red-500 transition flex items-center justify-center cursor-pointer"
                                                 title="Delete"
                                             >
                                                 <span className="material-icons text-sm">delete</span>
