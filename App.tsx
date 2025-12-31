@@ -2,6 +2,8 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { BlockData, Connection, CanvasMode, Position, BlockType, ChatMessage, ViewMode, BlockStatus, Workspace, GlobalRagDatabase, RagDocument } from './types';
 import { BlockComponent } from './components/BlockComponent';
 import { DocumentBuilder } from './components/DocumentBuilder';
+import { ListView } from './components/ListView';
+import { KanbanView } from './components/KanbanView';
 import { synthesizeBlocks, chatWithCanvas, generateImageAsset, transcribeAudio, refineText, chatWithContext, processUrlSource, processPdf, queryRagDatabase } from './services/geminiService';
 
 // Initial dummy data
@@ -794,15 +796,34 @@ function App() {
             </div>
         )}
         
-        {/* Placeholder Views for when switching out of canvas - simplified for this update */}
-        {view !== 'canvas' && (
-           <div className="w-full h-full flex items-center justify-center text-slate-400 bg-slate-50">
-               <div className="text-center">
-                   <span className="material-icons text-4xl mb-2">construction</span>
-                   <p>Data View ({view}) - Showing data for: {activeWorkspace.name}</p>
-                   <p className="text-xs mt-2 text-slate-400">Contains {blocks.length} blocks</p>
-               </div>
-           </div>
+        {view === 'list' && (
+            <ListView blocks={blocks} onDelete={deleteBlock} onUpdateStatus={updateBlockStatus} />
+        )}
+
+        {view === 'kanban' && (
+             <KanbanView blocks={blocks} onDelete={deleteBlock} onUpdateStatus={updateBlockStatus} />
+        )}
+
+        {view === 'history' && (
+             <div className="w-full h-full bg-slate-50 p-10 overflow-y-auto">
+                 <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-8">
+                     <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+                         <span className="material-icons text-slate-400">history</span> Activity Log
+                     </h2>
+                     <div className="space-y-4">
+                         {blocks.sort((a,b) => b.createdAt - a.createdAt).map(b => (
+                             <div key={b.id} className="flex items-center gap-4 p-4 border-b border-slate-100 last:border-0">
+                                 <div className="text-xs font-mono text-slate-400">{new Date(b.createdAt).toLocaleString()}</div>
+                                 <div className="flex-1">
+                                     <span className="font-bold text-slate-700">{b.title || 'Untitled'}</span>
+                                     <span className="text-slate-500 text-sm"> created as </span>
+                                     <span className="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-bold uppercase">{b.type}</span>
+                                 </div>
+                             </div>
+                         ))}
+                     </div>
+                 </div>
+             </div>
         )}
 
       </div>
