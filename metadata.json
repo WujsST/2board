@@ -1,0 +1,7 @@
+{
+  "name": "Synapse: Creative Synthesis Workspace",
+  "description": "An AI-powered infinite canvas for creators to synthesize ideas, connect media, and generate strategies using Gemini.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
