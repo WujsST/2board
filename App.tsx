@@ -150,7 +150,7 @@ function App() {
   };
 
   const handleCreateWorkspace = (name?: string) => {
-    const wsName = name || prompt("Enter name for new workspace:", "New Project");
+    const wsName = name || window.prompt("Enter name for new workspace:", "New Project");
     if (!wsName) return;
     const newWs: Workspace = {
       id: Date.now().toString(),
@@ -229,8 +229,8 @@ function App() {
   // --- New Handlers (Gemini & Actions) ---
 
   const handleGenerateImage = async () => {
-    const prompt = prompt("Describe the image you want to generate:");
-    if (!prompt) return;
+    const imagePrompt = window.prompt("Describe the image you want to generate:");
+    if (!imagePrompt) return;
 
     // Calculate center position for new block
     const centerX = (-pan.x + (window.innerWidth / 2)) / scale;
@@ -253,7 +253,7 @@ function App() {
 
     setBlocks((prev: BlockData[]) => [...prev, newBlock]);
 
-    const imageUrl = await generateImageAsset(prompt);
+    const imageUrl = await generateImageAsset(imagePrompt);
     
     setBlocks((prev: BlockData[]) => prev.map(b => 
         b.id === id ? { ...b, content: imageUrl || 'Failed to generate image', isProcessing: false } : b
