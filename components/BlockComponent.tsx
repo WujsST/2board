@@ -638,7 +638,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
     return (
         <div
             className={`absolute w-3 h-3 bg-white border-2 rounded-full transition-all duration-200 z-30 flex items-center justify-center
-                ${side === 'left' ? '-left-1.5' : '-right-1.5'}
+                ${side === 'left' ? '-left-3' : '-right-3'}
                 ${isTarget ? 'border-indigo-500 bg-indigo-50 scale-150 ring-2 ring-indigo-200 shadow-md cursor-cell' : 'border-indigo-300'}
                 ${isSource ? 'bg-indigo-600 border-indigo-600 scale-110' : ''}
                 ${!isConnecting ? 'hover:scale-125 hover:border-indigo-600 cursor-crosshair' : ''}

@@ -1,9 +1,11 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { BlockData, Connection, CanvasMode, Position, BlockType, ChatMessage, ViewMode, BlockStatus, Workspace, GlobalRagDatabase, RagDocument } from './types';
+import { BlockData, Connection, CanvasMode, Position, BlockType, ChatMessage, ViewMode, BlockStatus, Workspace, GlobalRagDatabase, RagDocument, UserProfile } from './types';
 import { BlockComponent } from './components/BlockComponent';
 import { DocumentBuilder } from './components/DocumentBuilder';
 import { ListView } from './components/ListView';
 import { KanbanView } from './components/KanbanView';
+import { LoginView } from './components/LoginView';
+import { DashboardView } from './components/DashboardView';
 import { synthesizeBlocks, chatWithCanvas, generateImageAsset, transcribeAudio, refineText, chatWithContext, processUrlSource, processPdf, queryRagDatabase } from './services/geminiService';
 
 // Initial dummy data
@@ -14,7 +16,21 @@ const INITIAL_BLOCKS: BlockData[] = [
 
 const DEFAULT_WORKSPACE_ID = 'default';
 
+// App Modes
+type AppScreen = 'login' | 'dashboard' | 'workspace';
+
 function App() {
+  // --- User State ---
+  const [user, setUser] = useState<UserProfile | null>(() => {
+      const saved = localStorage.getItem('2board_user');
+      return saved ? JSON.parse(saved) : null;
+  });
+
+  const [appScreen, setAppScreen] = useState<AppScreen>(() => {
+      if (!localStorage.getItem('2board_user')) return 'login';
+      return 'dashboard';
+  });
+
   // --- Global RAG Registry State ---
   const [globalRags, setGlobalRags] = useState<GlobalRagDatabase[]>(() => {
       const saved = localStorage.getItem('synapse_global_rag_dbs');
@@ -54,7 +70,6 @@ function App() {
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId) || workspaces[0];
 
   // Helper to update current workspace blocks/connections
-  // MODIFIED: Arguments are now optional to prevent overwriting with stale state
   const updateWorkspaceState = (
       newBlocks?: BlockData[] | ((prev: BlockData[]) => BlockData[]), 
       newConnections?: Connection[] | ((prev: Connection[]) => Connection[])
@@ -62,12 +77,10 @@ function App() {
       setWorkspaces(prevWorkspaces => {
           return prevWorkspaces.map(ws => {
               if (ws.id === activeWorkspaceId) {
-                  // If newBlocks is provided, use it. Otherwise, keep existing ws.blocks (which is the latest state in this updater)
                   const updatedBlocks = newBlocks 
                     ? (typeof newBlocks === 'function' ? newBlocks(ws.blocks) : newBlocks)
                     : ws.blocks;
                   
-                  // Same logic for connections
                   const updatedConnections = newConnections 
                     ? (typeof newConnections === 'function' ? newConnections(ws.connections) : newConnections)
                     : ws.connections;
@@ -83,7 +96,6 @@ function App() {
   const blocks = activeWorkspace.blocks;
   const connections = activeWorkspace.connections;
   
-  // MODIFIED: Pass undefined for the part of state we are NOT updating
   const setBlocks = (val: any) => updateWorkspaceState(val, undefined);
   const setConnections = (val: any) => updateWorkspaceState(undefined, val);
 
@@ -118,59 +130,77 @@ function App() {
   const activeBlockIdRef = useRef<string | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  // --- Workspace Actions ---
+  // --- App Level Actions ---
 
-  const handleCreateWorkspace = () => {
-    const name = prompt("Enter name for new workspace:", "New Project");
-    if (!name) return;
+  const handleLogin = (newUser: UserProfile) => {
+      setUser(newUser);
+      localStorage.setItem('2board_user', JSON.stringify(newUser));
+      setAppScreen('dashboard');
+  };
+
+  const handleLogout = () => {
+      setUser(null);
+      localStorage.removeItem('2board_user');
+      setAppScreen('login');
+  };
+
+  const handleSelectWorkspace = (id: string) => {
+      setActiveWorkspaceId(id);
+      setAppScreen('workspace');
+  };
+
+  const handleCreateWorkspace = (name?: string) => {
+    const wsName = name || prompt("Enter name for new workspace:", "New Project");
+    if (!wsName) return;
     const newWs: Workspace = {
       id: Date.now().toString(),
-      name,
+      name: wsName,
       blocks: [],
       connections: [],
       lastModified: Date.now()
     };
     setWorkspaces(prev => [...prev, newWs]);
+    
+    // Switch to the new workspace immediately
     setActiveWorkspaceId(newWs.id);
-    setIsWorkspaceMenuOpen(false);
+    if (name) {
+        setAppScreen('workspace');
+    }
   };
 
-  const handleDeleteWorkspace = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (workspaces.length === 1) {
-      alert("Cannot delete the last workspace.");
+  const handleDeleteWorkspace = (id: string) => {
+    if (workspaces.length === 1 && appScreen === 'workspace') {
+      alert("Cannot delete the last active workspace.");
       return;
     }
     if (confirm("Are you sure you want to delete this workspace?")) {
       const newWorkspaces = workspaces.filter(w => w.id !== id);
       setWorkspaces(newWorkspaces);
       if (activeWorkspaceId === id) {
-        setActiveWorkspaceId(newWorkspaces[0].id);
+          if (newWorkspaces.length > 0) setActiveWorkspaceId(newWorkspaces[0].id);
+          else {
+              // Should create a default if empty?
+              handleCreateWorkspace("Default Board");
+          }
       }
     }
   };
 
-  // --- Core CRUD Actions ---
+  // --- Workspace Logic --- (Mostly unchanged logic, just wrapped in render)
 
   const handleDrop = (e: React.DragEvent) => {
       e.preventDefault();
       const type = e.dataTransfer.getData('application/reactflow') as BlockType;
-      
       if (type) {
           const rect = canvasRef.current?.getBoundingClientRect();
           if (!rect) return;
-          
           const x = (e.clientX - rect.left - pan.x) / scale;
           const y = (e.clientY - rect.top - pan.y) / scale;
-          
           addBlockAt(type, x, y);
       }
   };
   
-  const handleDragOver = (e: React.DragEvent) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-  };
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
 
   const addBlockAt = (type: BlockType, x: number, y: number) => {
     const newBlock: BlockData = {
@@ -189,179 +219,251 @@ function App() {
   };
 
   const deleteBlock = (id: string) => {
-    // MODIFIED: Perform atomic update of both blocks and connections
     updateWorkspaceState(
         (prevBlocks) => prevBlocks.filter(b => b.id !== id),
         (prevConns) => prevConns.filter(c => c.from !== id && c.to !== id)
     );
+    setSelectedBlockIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  };
+
+  // --- New Handlers (Gemini & Actions) ---
+
+  const handleGenerateImage = async () => {
+    const prompt = prompt("Describe the image you want to generate:");
+    if (!prompt) return;
+
+    // Calculate center position for new block
+    const centerX = (-pan.x + (window.innerWidth / 2)) / scale;
+    const centerY = (-pan.y + (window.innerHeight / 2)) / scale;
+
+    const id = Date.now().toString();
+    const newBlock: BlockData = {
+        id,
+        type: 'image',
+        content: 'Loading image...',
+        title: 'Generated Image',
+        position: { x: centerX, y: centerY },
+        width: 300,
+        height: 300,
+        status: 'todo',
+        createdAt: Date.now(),
+        tags: ['ai-generated'],
+        isProcessing: true
+    };
+
+    setBlocks((prev: BlockData[]) => [...prev, newBlock]);
+
+    const imageUrl = await generateImageAsset(prompt);
     
-    setSelectedBlockIds(prev => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
+    setBlocks((prev: BlockData[]) => prev.map(b => 
+        b.id === id ? { ...b, content: imageUrl || 'Failed to generate image', isProcessing: false } : b
+    ));
   };
 
-  const updateBlockContent = (id: string, content: string) => {
-    setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content } : b));
+  const handleBlockExport = (id: string) => {
+      setDocBuilderConfig({
+          isOpen: true,
+          preSelectedIds: new Set([id])
+      });
   };
-  
-  const updateBlockTitle = (id: string, title: string) => {
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, title } : b));
-  };
-
-  const updateBlockStatus = (id: string, status: BlockStatus) => {
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, status } : b));
-  };
-
-  // --- Tag Management ---
-  const handleAddTag = (id: string, tag: string) => {
-      setBlocks((prev: BlockData[]) => prev.map(b => {
-          if (b.id === id && !b.tags.includes(tag)) {
-              return { ...b, tags: [...b.tags, tag] };
-          }
-          return b;
-      }));
-  };
-
-  const handleRemoveTag = (id: string, tagToRemove: string) => {
-      setBlocks((prev: BlockData[]) => prev.map(b => {
-          if (b.id === id) {
-              return { ...b, tags: b.tags.filter(t => t !== tagToRemove) };
-          }
-          return b;
-      }));
-  };
-
-  // --- Specific Node Actions ---
 
   const handleAudioRecordFinish = async (id: string, blob: Blob) => {
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true } : b));
+      // Convert blob to base64
       const reader = new FileReader();
       reader.readAsDataURL(blob);
       reader.onloadend = async () => {
           const base64data = reader.result as string;
+          // Format: data:audio/webm;base64,.....
+          const mimeType = base64data.split(';')[0].split(':')[1];
           const base64Content = base64data.split(',')[1];
-          const mimeType = base64data.split(',')[0].match(/:(.*?);/)?.[1] || 'audio/webm';
+
+          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true } : b));
+
           const text = await transcribeAudio(base64Content, mimeType);
+
           setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content: text, isProcessing: false } : b));
       };
+  };
+
+  const handleRunRefinement = async (id: string) => {
+      const block = blocks.find(b => b.id === id);
+      if (!block || !block.instruction) {
+          alert("Please enter an instruction first.");
+          return;
+      }
+
+      // Find input blocks
+      const inputIds = connections.filter(c => c.to === id).map(c => c.from);
+      const inputBlocks = blocks.filter(b => inputIds.includes(b.id));
+      const inputText = inputBlocks.map(b => b.content).join('\n\n');
+
+      if (!inputText) {
+          alert("Connect some blocks with content to refine.");
+          return;
+      }
+
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true } : b));
+
+      const result = await refineText(inputText, block.instruction);
+
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content: result, isProcessing: false } : b));
   };
 
   const handleInstructionChange = (id: string, instruction: string) => {
       setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, instruction } : b));
   };
 
-  const handleRunRefinement = async (id: string) => {
-      const block = blocks.find(b => b.id === id);
-      if (!block) return;
-      const inputConnections = connections.filter(c => c.to === id);
-      const inputBlocks = blocks.filter(b => inputConnections.some(c => c.from === b.id));
-      if (inputBlocks.length === 0) {
-          alert("Connect input blocks to the left side first!");
-          return;
-      }
-      const combinedInput = inputBlocks.map(b => b.content).join("\n\n");
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true } : b));
-      const result = await refineText(combinedInput, block.instruction || "Improve this text.");
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content: result, isProcessing: false } : b));
-  };
-
   const handleChatNodeSubmit = async (id: string, message: string) => {
       const block = blocks.find(b => b.id === id);
       if (!block) return;
+
       const newHistory: ChatMessage[] = [...(block.chatHistory || []), { role: 'user', text: message }];
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, chatHistory: newHistory, isProcessing: true } : b));
       
-      // Determine if RAG or Context Chat
-      let responseText = "";
+      // Optimistic update
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { 
+          ...b, 
+          chatHistory: newHistory,
+          isProcessing: true 
+      } : b));
+
+      // 7. RAG Database Query check
       if (block.type === 'rag-db') {
           const docs = block.ragIndexedDocs || [];
-          responseText = await queryRagDatabase(newHistory, docs, message);
-      } else {
-          // Standard Context Chat
-          const inputConnections = connections.filter(c => c.to === id);
-          const inputBlocks = blocks.filter(b => inputConnections.some(c => c.from === b.id));
-          const contextText = inputBlocks.map(b => `[${b.title}]: ${b.content}`).join('\n\n');
-          responseText = await chatWithContext(newHistory, contextText, message, block.instruction);
+          const response = await queryRagDatabase(newHistory, docs, message);
+          
+          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { 
+              ...b, 
+              chatHistory: [...newHistory, { role: 'model', text: response }],
+              isProcessing: false 
+          } : b));
+          return;
       }
 
-      const finalHistory: ChatMessage[] = [...newHistory, { role: 'model', text: responseText }];
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, chatHistory: finalHistory, isProcessing: false } : b));
+      // Normal Context Chat
+      const inputIds = connections.filter(c => c.to === id).map(c => c.from);
+      const inputBlocks = blocks.filter(b => inputIds.includes(b.id));
+      const contextText = inputBlocks.map(b => `[${b.title}]: ${b.content}`).join('\n\n');
+
+      const response = await chatWithContext(newHistory, contextText, message, block.instruction);
+
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { 
+          ...b, 
+          chatHistory: [...newHistory, { role: 'model', text: response }],
+          isProcessing: false 
+      } : b));
   };
 
   const handleSaveChatAsNote = (sourceId: string, text: string) => {
       const sourceBlock = blocks.find(b => b.id === sourceId);
-      if(!sourceBlock) return;
+      if (!sourceBlock) return;
+
       const newBlock: BlockData = {
           id: Date.now().toString(),
           type: 'note',
+          title: 'Saved Chat',
           content: text,
-          title: 'Saved Note',
-          position: { x: sourceBlock.position.x + 350, y: sourceBlock.position.y },
+          position: { x: sourceBlock.position.x + 300, y: sourceBlock.position.y },
           width: 280,
           height: 160,
           status: 'todo',
           createdAt: Date.now(),
           tags: ['saved-chat']
       };
-      // These will now queue correctly due to functional updates in setWorkspaces
+
       setBlocks((prev: BlockData[]) => [...prev, newBlock]);
-      setConnections((prev: Connection[]) => [...prev, { id: `auto-${Date.now()}`, from: sourceId, to: newBlock.id }]);
+      // Connect them
+      setConnections((prev: Connection[]) => [...prev, { id: `${sourceId}-${newBlock.id}`, from: sourceId, to: newBlock.id }]);
   };
-  
-  const handleBlockExport = (id: string) => {
-      setDocBuilderConfig({ isOpen: true, preSelectedIds: new Set([id]) });
-  };
-  
-  // --- New Source Handlers ---
-  
+
   const handleProcessSourceUrl = async (id: string, url: string, type: 'link' | 'youtube') => {
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true, sourceUrl: url } : b));
-      const extractedText = await processUrlSource(url, type);
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { 
-          ...b, 
-          content: extractedText, 
-          title: type === 'youtube' ? 'YouTube Summary' : 'Link Context',
-          isProcessing: false 
-      } : b));
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, sourceUrl: url, isProcessing: true } : b));
+      
+      const content = await processUrlSource(url, type);
+      
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content, isProcessing: false } : b));
   };
-  
+
   const handleProcessPdf = async (id: string, file: File) => {
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true, title: file.name } : b));
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onloadend = async () => {
           const base64data = reader.result as string;
           const base64Content = base64data.split(',')[1];
-          const extractedText = await processPdf(base64Content);
-          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { 
-              ...b, 
-              content: extractedText, 
-              isProcessing: false 
-          } : b));
+          
+          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, title: file.name, isProcessing: true } : b));
+          
+          const text = await processPdf(base64Content);
+          
+          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content: text, isProcessing: false } : b));
       };
   };
 
-  // --- RAG Database Actions ---
+  const handleRagIndex = async (id: string) => {
+      const block = blocks.find(b => b.id === id);
+      if (!block) return;
 
-  const handleRagCreateGlobal = (id: string, name: string) => {
-      // 1. Check if name exists
-      if (globalRags.some(r => r.name === name)) {
-          alert("A global database with this name already exists.");
+      // Find connected blocks
+      const inputIds = connections.filter(c => c.to === id).map(c => c.from);
+      const inputBlocks = blocks.filter(b => inputIds.includes(b.id));
+
+      if (inputBlocks.length === 0) {
+          alert("Connect blocks to this Knowledge Base to ingest them.");
           return;
       }
-      
-      const newGlobal: GlobalRagDatabase = {
-          name,
-          docs: [],
-          updatedAt: Date.now()
-      };
 
-      setGlobalRags(prev => [...prev, newGlobal]);
-      
-      // Update local block to link to this new global
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, ragDbName: name, ragIndexedDocs: [] } : b));
+      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true } : b));
+
+      // Simulate indexing (creating RagDocuments)
+      const newDocs: RagDocument[] = inputBlocks.map(b => ({
+          id: `${b.id}-${Date.now()}`,
+          sourceId: b.id,
+          title: b.title || 'Untitled',
+          content: b.content,
+          timestamp: Date.now(),
+          type: b.type
+      }));
+
+      // Simulate delay for "embedding"
+      setTimeout(() => {
+           setBlocks((prev: BlockData[]) => prev.map(b => {
+               if (b.id === id) {
+                   const existingDocs = b.ragIndexedDocs || [];
+                   return { 
+                       ...b, 
+                       ragIndexedDocs: [...existingDocs, ...newDocs],
+                       isProcessing: false,
+                       ragLastSynced: Date.now()
+                   };
+               }
+               return b;
+           }));
+
+           // Update Global Registry if this block is linked to one
+           if (block.ragDbName) {
+               setGlobalRags(prev => {
+                   const existingIndex = prev.findIndex(r => r.name === block.ragDbName);
+                   if (existingIndex >= 0) {
+                       const updated = [...prev];
+                       updated[existingIndex] = {
+                           ...updated[existingIndex],
+                           docs: [...updated[existingIndex].docs, ...newDocs],
+                           updatedAt: Date.now()
+                       };
+                       return updated;
+                   }
+                   return prev;
+               });
+           }
+      }, 1000);
+  };
+
+  const handleRagCreateGlobal = (id: string, name: string) => {
+       setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, ragDbName: name, ragIndexedDocs: [] } : b));
+       
+       // Add to global registry if not exists
+       if (!globalRags.find(r => r.name === name)) {
+           setGlobalRags(prev => [...prev, { name, docs: [], updatedAt: Date.now() }]);
+       }
   };
 
   const handleRagLoadGlobal = (id: string, ragDb: GlobalRagDatabase) => {
@@ -372,294 +474,80 @@ function App() {
       } : b));
   };
 
-  const handleRagIndex = (id: string) => {
-      const block = blocks.find(b => b.id === id);
-      if (!block) return;
-
-      const inputConnections = connections.filter(c => c.to === id);
-      const inputBlocks = blocks.filter(b => inputConnections.some(c => c.from === b.id));
-
-      if (inputBlocks.length === 0) {
-          alert("Connect notes to index them!");
-          return;
-      }
-
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, isProcessing: true } : b));
-
-      // Create RagDocuments from inputs
-      const newDocs: RagDocument[] = inputBlocks.map(b => ({
-          id: `${b.id}-${Date.now()}`,
-          sourceId: b.id,
-          title: b.title || 'Untitled Source',
-          content: b.content,
-          timestamp: Date.now(),
-          type: b.type
-      }));
-
-      // Update Local State
-      const existingDocs = block.ragIndexedDocs || [];
-      const updatedDocs = [...existingDocs];
-      
-      newDocs.forEach(newDoc => {
-          const idx = updatedDocs.findIndex(d => d.sourceId === newDoc.sourceId);
-          if (idx >= 0) {
-              updatedDocs[idx] = newDoc; // Update existing
-          } else {
-              updatedDocs.push(newDoc); // Add new
-          }
-      });
-
-      setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { 
-          ...b, 
-          isProcessing: false, 
-          ragIndexedDocs: updatedDocs,
-          ragLastSynced: Date.now()
-      } : b));
-
-      // Sync to Global if linked
-      if (block.ragDbName) {
-          setGlobalRags(prev => prev.map(g => {
-              if (g.name === block.ragDbName) {
-                  return { ...g, docs: updatedDocs, updatedAt: Date.now() };
-              }
-              return g;
-          }));
-      }
-  };
-
-
-  // --- AI Actions (Global) ---
-
-  const handleSynthesize = async () => {
-    const selected = blocks.filter(b => selectedBlockIds.has(b.id));
-    if (selected.length < 2) {
-      alert("Select at least 2 blocks to synthesize.");
-      return;
-    }
-    setBlocks((prev: BlockData[]) => prev.map(b => selectedBlockIds.has(b.id) ? { ...b, isProcessing: true } : b));
-    const result = await synthesizeBlocks(selected);
-    setBlocks((prev: BlockData[]) => prev.map(b => selectedBlockIds.has(b.id) ? { ...b, isProcessing: false } : b));
-    const avgX = selected.reduce((sum, b) => sum + b.position.x, 0) / selected.length;
-    const avgY = selected.reduce((sum, b) => sum + b.position.y, 0) / selected.length;
-    const newBlock: BlockData = {
-      id: Date.now().toString(),
-      type: 'synthesis',
-      content: result,
-      title: 'Synthesis Result',
-      position: { x: avgX + 300, y: avgY },
-      width: 400,
-      height: 300,
-      status: 'todo',
-      createdAt: Date.now(),
-      tags: ['synthesis']
-    };
-    setBlocks((prev: BlockData[]) => [...prev, newBlock]);
-  };
-
-  const handleGenerateImage = async () => {
-      const userPrompt = window.prompt("Enter a description for the image:");
-      if(!userPrompt) return;
-      const id = Date.now().toString();
-       const centerX = (-pan.x + window.innerWidth / 2) / scale;
-       const centerY = (-pan.y + window.innerHeight / 2) / scale;
-      const placeholder: BlockData = {
-          id,
-          type: 'image',
-          content: '',
-          title: 'Generating...',
-          position: { x: centerX - 140, y: centerY - 150 },
-          width: 280,
-          height: 280,
-          isProcessing: true,
-          status: 'todo',
-          createdAt: Date.now(),
-          tags: ['image']
-      };
-      setBlocks((prev: BlockData[]) => [...prev, placeholder]);
-      const base64Image = await generateImageAsset(userPrompt);
-      if (base64Image) {
-          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content: base64Image, title: 'AI Image', isProcessing: false } : b));
-      } else {
-          setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content: 'Failed to generate image.', title: 'Error', isProcessing: false, type: 'note' } : b));
-      }
-  };
-
   const handleChatSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim()) return;
-    const userMsg: ChatMessage = { role: 'user', text: chatInput };
-    setChatHistory(prev => [...prev, userMsg]);
-    setChatInput('');
-    setIsChatLoading(true);
-    const response = await chatWithCanvas(chatHistory, blocks, userMsg.text);
-    setChatHistory(prev => [...prev, { role: 'model', text: response }]);
-    setIsChatLoading(false);
+      e.preventDefault();
+      if (!chatInput.trim()) return;
+
+      const newMessage: ChatMessage = { role: 'user', text: chatInput };
+      setChatHistory(prev => [...prev, newMessage]);
+      setChatInput('');
+      setIsChatLoading(true);
+
+      const response = await chatWithCanvas(chatHistory, blocks, newMessage.text);
+      
+      setChatHistory(prev => [...prev, { role: 'model', text: response }]);
+      setIsChatLoading(false);
   };
 
-  // --- Event Handlers (Mouse) ---
+  // --- Rendering Logic Switch ---
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (view !== 'canvas') return;
-    if (mode === CanvasMode.IDLE && e.target === canvasRef.current) {
-      setMode(CanvasMode.PANNING);
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-    }
-  };
+  if (appScreen === 'login') {
+      return <LoginView onLogin={handleLogin} />;
+  }
 
-  const handleBlockMouseDown = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    if (view !== 'canvas') return;
-    if (e.shiftKey) {
-        setSelectedBlockIds(prev => {
-            const next = new Set(prev);
-            if (next.has(id)) next.delete(id);
-            else next.add(id);
-            return next;
-        });
-    } else if (!selectedBlockIds.has(id)) {
-        setSelectedBlockIds(new Set([id]));
-    }
-    setMode(CanvasMode.DRAGGING_BLOCK);
-    activeBlockIdRef.current = id;
-    dragStartRef.current = { x: e.clientX, y: e.clientY };
-    const block = blocks.find(b => b.id === id);
-    if(block) blockStartPosRef.current = { ...block.position };
-  };
+  if (appScreen === 'dashboard' && user) {
+      return (
+          <DashboardView 
+              user={user}
+              workspaces={workspaces}
+              onCreateWorkspace={handleCreateWorkspace}
+              onSelectWorkspace={handleSelectWorkspace}
+              onDeleteWorkspace={handleDeleteWorkspace}
+              onLogout={handleLogout}
+          />
+      );
+  }
 
-  const handleConnectStart = (e: React.MouseEvent, id: string) => {
-      setMode(CanvasMode.CONNECTING);
-      setConnectionStartId(id);
-  };
-
-  const handleConnectEnd = (e: React.MouseEvent, targetId: string) => {
-      if (mode === CanvasMode.CONNECTING && connectionStartId && connectionStartId !== targetId) {
-          const exists = connections.some(c => c.from === connectionStartId && c.to === targetId);
-          if (!exists) {
-              setConnections((prev: Connection[]) => [...prev, { 
-                  id: `${connectionStartId}-${targetId}-${Date.now()}`, 
-                  from: connectionStartId, 
-                  to: targetId 
-              }]);
-          }
-      }
-      setMode(CanvasMode.IDLE);
-      setConnectionStartId(null);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    setMousePos({ x: e.clientX, y: e.clientY });
-    if (mode === CanvasMode.PANNING) {
-      const dx = e.clientX - dragStartRef.current.x;
-      const dy = e.clientY - dragStartRef.current.y;
-      setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }));
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-    } else if (mode === CanvasMode.DRAGGING_BLOCK && activeBlockIdRef.current) {
-        const dx = (e.clientX - dragStartRef.current.x) / scale;
-        const dy = (e.clientY - dragStartRef.current.y) / scale;
-        setBlocks((prev: BlockData[]) => prev.map(b => {
-            if (b.id === activeBlockIdRef.current) {
-                 return { ...b, position: { x: blockStartPosRef.current.x + dx, y: blockStartPosRef.current.y + dy } };
-            }
-            return b;
-        }));
-    }
-  };
-
-  const handleMouseUp = (e: React.MouseEvent) => {
-    if (mode === CanvasMode.CONNECTING) {
-        setMode(CanvasMode.IDLE);
-        setConnectionStartId(null);
-    }
-    setMode(CanvasMode.IDLE);
-    activeBlockIdRef.current = null;
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    if (view !== 'canvas') return;
-    if (e.ctrlKey || e.metaKey) {
-      const zoomSensitivity = 0.001;
-      const newScale = Math.min(Math.max(0.1, scale - e.deltaY * zoomSensitivity), 3);
-      setScale(newScale);
-    } else {
-      setPan(prev => ({ x: prev.x - e.deltaX, y: prev.y - e.deltaY }));
-    }
-  };
-
-  // --- Rendering ---
+  // --- Main Workspace Render ---
 
   const renderConnections = () => {
     return connections.map(conn => {
       const from = blocks.find(b => b.id === conn.from);
       const to = blocks.find(b => b.id === conn.to);
       if (!from || !to) return null;
-      
-      // ANCHOR LOGIC:
-      // Start exact center of right handle: x + width. y + height/2
-      // End exact center of left handle: x. y + height/2
-      const startX = from.position.x + from.width;
+      const startX = from.position.x + from.width + 6;
       const startY = from.position.y + from.height / 2;
-      const endX = to.position.x;
+      const endX = to.position.x - 6;
       const endY = to.position.y + to.height / 2;
-      
       const dist = Math.abs(endX - startX);
-      
-      // MARGIN LOGIC:
-      // Force the curve to go straight out horizontally for at least `minMargin`
-      // or a fraction of the distance if it's large.
       const minMargin = 50; 
       const controlOffset = Math.max(dist * 0.4, minMargin);
-
       const cp1X = startX + controlOffset;
       const cp1Y = startY;
       const cp2X = endX - controlOffset;
       const cp2Y = endY;
-
       const pathData = `M ${startX} ${startY} C ${cp1X} ${cp1Y}, ${cp2X} ${cp2Y}, ${endX} ${endY}`;
-
       return (
-        <path
-          key={conn.id}
-          d={pathData}
-          fill="none"
-          stroke="#94a3b8"
-          strokeWidth="2"
-          strokeLinecap="round"
-          className="opacity-60 hover:opacity-100 hover:stroke-indigo-500 transition-colors pointer-events-auto"
-        />
+        <path key={conn.id} d={pathData} fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" className="opacity-60 hover:opacity-100 hover:stroke-indigo-500 transition-colors pointer-events-auto" />
       );
     });
   };
   
-  // Render Ghost Connection while dragging
   const renderGhostConnection = () => {
       if (mode === CanvasMode.CONNECTING && connectionStartId) {
           const startBlock = blocks.find(b => b.id === connectionStartId);
           if (!startBlock) return null;
-          
-          const startX = startBlock.position.x + startBlock.width;
+          const startX = startBlock.position.x + startBlock.width + 6;
           const startY = startBlock.position.y + startBlock.height / 2;
-          
           const mouseX = (mousePos.x - pan.x) / scale;
           const mouseY = (mousePos.y - pan.y) / scale;
-          
           const dist = Math.abs(mouseX - startX);
           const controlOffset = Math.max(dist * 0.4, 50);
-          
           const cp1X = startX + controlOffset;
           const cp1Y = startY;
           const cp2X = mouseX - controlOffset;
           const cp2Y = mouseY;
-          
-          return (
-             <path 
-                d={`M ${startX} ${startY} C ${cp1X} ${cp1Y}, ${cp2X} ${cp2Y}, ${mouseX} ${mouseY}`}
-                fill="none"
-                stroke="#6366f1"
-                strokeWidth="2"
-                strokeDasharray="5,5"
-                className="opacity-50 pointer-events-none"
-             />
-          );
+          return <path d={`M ${startX} ${startY} C ${cp1X} ${cp1Y}, ${cp2X} ${cp2Y}, ${mouseX} ${mouseY}`} fill="none" stroke="#6366f1" strokeWidth="2" strokeDasharray="5,5" className="opacity-50 pointer-events-none" />;
       }
       return null;
   };
@@ -677,12 +565,81 @@ function App() {
       </div>
   );
 
+  // Mouse Handlers for Canvas (Need to be defined here to close over current active workspace scope)
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (view !== 'canvas') return;
+    if (mode === CanvasMode.IDLE && e.target === canvasRef.current) {
+      setMode(CanvasMode.PANNING);
+      dragStartRef.current = { x: e.clientX, y: e.clientY };
+    }
+  };
+  const handleBlockMouseDown = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (view !== 'canvas') return;
+    if (e.shiftKey) {
+        setSelectedBlockIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+    } else if (!selectedBlockIds.has(id)) {
+        setSelectedBlockIds(new Set([id]));
+    }
+    setMode(CanvasMode.DRAGGING_BLOCK);
+    activeBlockIdRef.current = id;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    const block = blocks.find(b => b.id === id);
+    if(block) blockStartPosRef.current = { ...block.position };
+  };
+  const handleConnectStart = (e: React.MouseEvent, id: string) => { setMode(CanvasMode.CONNECTING); setConnectionStartId(id); };
+  const handleConnectEnd = (e: React.MouseEvent, targetId: string) => {
+      if (mode === CanvasMode.CONNECTING && connectionStartId && connectionStartId !== targetId) {
+          const exists = connections.some(c => c.from === connectionStartId && c.to === targetId);
+          if (!exists) setConnections((prev: Connection[]) => [...prev, { id: `${connectionStartId}-${targetId}-${Date.now()}`, from: connectionStartId, to: targetId }]);
+      }
+      setMode(CanvasMode.IDLE); setConnectionStartId(null);
+  };
+  const handleMouseMove = (e: React.MouseEvent) => {
+    setMousePos({ x: e.clientX, y: e.clientY });
+    if (mode === CanvasMode.PANNING) {
+      const dx = e.clientX - dragStartRef.current.x;
+      const dy = e.clientY - dragStartRef.current.y;
+      setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+      dragStartRef.current = { x: e.clientX, y: e.clientY };
+    } else if (mode === CanvasMode.DRAGGING_BLOCK && activeBlockIdRef.current) {
+        const dx = (e.clientX - dragStartRef.current.x) / scale;
+        const dy = (e.clientY - dragStartRef.current.y) / scale;
+        setBlocks((prev: BlockData[]) => prev.map(b => { if (b.id === activeBlockIdRef.current) return { ...b, position: { x: blockStartPosRef.current.x + dx, y: blockStartPosRef.current.y + dy } }; return b; }));
+    }
+  };
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (mode === CanvasMode.CONNECTING) { setMode(CanvasMode.IDLE); setConnectionStartId(null); }
+    setMode(CanvasMode.IDLE); activeBlockIdRef.current = null;
+  };
+  const handleWheel = (e: React.WheelEvent) => {
+    if (view !== 'canvas') return;
+    if (e.ctrlKey || e.metaKey) {
+      const zoomSensitivity = 0.001;
+      const newScale = Math.min(Math.max(0.1, scale - e.deltaY * zoomSensitivity), 3);
+      setScale(newScale);
+    } else { setPan(prev => ({ x: prev.x - e.deltaX, y: prev.y - e.deltaY })); }
+  };
+
+  // Handler for specific block actions passed down
+  const updateBlockContent = (id: string, content: string) => setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, content } : b));
+  const updateBlockTitle = (id: string, title: string) => setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, title } : b));
+  const updateBlockStatus = (id: string, status: BlockStatus) => setBlocks((prev: BlockData[]) => prev.map(b => b.id === id ? { ...b, status } : b));
+  const handleAddTag = (id: string, tag: string) => setBlocks((prev: BlockData[]) => prev.map(b => { if (b.id === id && !b.tags.includes(tag)) return { ...b, tags: [...b.tags, tag] }; return b; }));
+  const handleRemoveTag = (id: string, tagToRemove: string) => setBlocks((prev: BlockData[]) => prev.map(b => { if (b.id === id) return { ...b, tags: b.tags.filter(t => t !== tagToRemove) }; return b; }));
+
   return (
     <div className="w-screen h-screen overflow-hidden flex bg-slate-50 text-slate-800 font-sans">
       
       {/* --- Sidebar (Navigation) --- */}
       <div className="w-16 h-screen glass-panel border-r border-white/50 flex flex-col items-center py-6 z-50 shadow-sm bg-white/60">
-          <div className="mb-8 w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-indigo-200">S</div>
+          <div 
+             className="mb-8 w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-indigo-200 cursor-pointer hover:bg-indigo-700 transition"
+             onClick={() => setAppScreen('dashboard')}
+             title="Back to Dashboard"
+          >
+              2
+          </div>
           
           <nav className="flex flex-col gap-4 w-full px-2">
               <button onClick={() => setView('canvas')} className={`p-3 rounded-xl transition-all flex justify-center ${view === 'canvas' ? 'bg-indigo-50 text-indigo-600 shadow-inner' : 'text-slate-400 hover:bg-white/50 hover:text-slate-600'}`} title="Canvas"><span className="material-icons">dashboard</span></button>
@@ -698,17 +655,16 @@ function App() {
                   </button>
                   {isWorkspaceMenuOpen && (
                       <div className="absolute left-14 top-0 w-48 bg-white rounded-xl shadow-xl border border-slate-200 p-2 z-50">
-                          <h3 className="text-xs font-bold text-slate-400 uppercase px-2 mb-2">Workspaces</h3>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase px-2 mb-2">Switch Workspace</h3>
                           <div className="max-h-40 overflow-y-auto mb-2 space-y-1">
                               {workspaces.map(ws => (
                                   <div key={ws.id} className={`flex items-center justify-between px-2 py-1.5 rounded-lg text-xs cursor-pointer ${ws.id === activeWorkspaceId ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'hover:bg-slate-50 text-slate-600'}`} onClick={() => { setActiveWorkspaceId(ws.id); setIsWorkspaceMenuOpen(false); }}>
                                       <span className="truncate flex-1">{ws.name}</span>
-                                      <button onClick={(e) => handleDeleteWorkspace(ws.id, e)} className="text-slate-300 hover:text-red-500 ml-2"><span className="material-icons text-[10px]">close</span></button>
                                   </div>
                               ))}
                           </div>
-                          <button onClick={handleCreateWorkspace} className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-indigo-600 font-medium hover:bg-indigo-50 flex items-center gap-1">
-                              <span className="material-icons text-[12px]">add</span> New Board
+                          <button onClick={() => setAppScreen('dashboard')} className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-indigo-600 font-medium hover:bg-indigo-50 flex items-center gap-1">
+                              <span className="material-icons text-[12px]">grid_view</span> All Boards
                           </button>
                       </div>
                   )}
@@ -726,7 +682,7 @@ function App() {
         {/* --- Toolbar --- */}
         {view === 'canvas' && (
             <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-40 flex flex-col items-center gap-2">
-                <div className="bg-white/40 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-slate-500 border border-white/60 shadow-sm">
+                <div className="bg-white/40 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-slate-500 border border-white/60 shadow-sm flex items-center gap-2">
                     {activeWorkspace.name}
                 </div>
                 <div className="flex gap-1 p-2 rounded-2xl glass-panel shadow-2xl bg-white/90 backdrop-blur-xl border border-white/60">
@@ -778,14 +734,14 @@ function App() {
                                 data={block}
                                 scale={1}
                                 isSelected={selectedBlockIds.has(block.id)}
-                                connectionStartId={connectionStartId} // Pass prop
+                                connectionStartId={connectionStartId}
                                 onMouseDown={handleBlockMouseDown}
                                 onConnectStart={handleConnectStart}
                                 onConnectEnd={handleConnectEnd}
                                 onContentChange={updateBlockContent}
                                 onTitleChange={updateBlockTitle}
                                 onDelete={deleteBlock}
-                                onExport={handleBlockExport} // Pass Export Handler
+                                onExport={handleBlockExport}
                                 onAddTag={handleAddTag}
                                 onRemoveTag={handleRemoveTag}
                                 onAudioRecordFinish={handleAudioRecordFinish}
@@ -795,7 +751,6 @@ function App() {
                                 onSaveChatAsNote={handleSaveChatAsNote}
                                 onProcessSourceUrl={handleProcessSourceUrl}
                                 onProcessPdf={handleProcessPdf}
-                                // RAG Props
                                 availableGlobalRags={globalRags}
                                 onRagIndex={handleRagIndex}
                                 onRagCreateGlobal={handleRagCreateGlobal}
@@ -807,14 +762,8 @@ function App() {
             </div>
         )}
         
-        {view === 'list' && (
-            <ListView blocks={blocks} onDelete={deleteBlock} onUpdateStatus={updateBlockStatus} />
-        )}
-
-        {view === 'kanban' && (
-             <KanbanView blocks={blocks} onDelete={deleteBlock} onUpdateStatus={updateBlockStatus} />
-        )}
-
+        {view === 'list' && <ListView blocks={blocks} onDelete={deleteBlock} onUpdateStatus={updateBlockStatus} />}
+        {view === 'kanban' && <KanbanView blocks={blocks} onDelete={deleteBlock} onUpdateStatus={updateBlockStatus} />}
         {view === 'history' && (
              <div className="w-full h-full bg-slate-50 p-10 overflow-y-auto">
                  <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-8">
@@ -840,8 +789,6 @@ function App() {
       </div>
 
       {/* --- Modals & Panels --- */}
-      
-      {/* Document Builder Modal */}
       {docBuilderConfig.isOpen && (
           <DocumentBuilder 
               blocks={blocks} 
@@ -850,56 +797,32 @@ function App() {
           />
       )}
 
-      {/* Global Chat Panel */}
-      <div 
-        className={`fixed top-4 right-4 bottom-4 w-80 glass-panel rounded-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 transform ${isChatOpen ? 'translate-x-0' : 'translate-x-[120%]'}`}
-      >
+      {/* Global Chat Panel (Available in Workspace Mode) */}
+      <div className={`fixed top-4 right-4 bottom-4 w-80 glass-panel rounded-2xl shadow-2xl z-50 flex flex-col transition-transform duration-300 transform ${isChatOpen ? 'translate-x-0' : 'translate-x-[120%]'}`}>
          <div className="p-4 border-b border-white/50 flex justify-between items-center bg-white/40 rounded-t-2xl">
             <h2 className="font-semibold text-slate-700 flex items-center gap-2 text-sm">
-                <span className="material-icons text-indigo-500">auto_awesome</span> Synapse Chat
+                <span className="material-icons text-indigo-500">auto_awesome</span> 2Board Chat
             </h2>
-            <button onClick={() => setIsChatOpen(false)} className="text-slate-400 hover:text-slate-600">
-                <span className="material-icons">close</span>
-            </button>
+            <button onClick={() => setIsChatOpen(false)} className="text-slate-400 hover:text-slate-600"><span className="material-icons">close</span></button>
          </div>
-         
          <div className="flex-1 overflow-y-auto p-4 space-y-4">
              {chatHistory.map((msg, idx) => (
                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                     <div className={`max-w-[85%] p-3 rounded-2xl text-xs ${msg.role === 'user' ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white/80 text-slate-700 rounded-bl-none shadow-sm'}`}>
-                         {msg.text}
-                     </div>
+                     <div className={`max-w-[85%] p-3 rounded-2xl text-xs ${msg.role === 'user' ? 'bg-indigo-500 text-white rounded-br-none' : 'bg-white/80 text-slate-700 rounded-bl-none shadow-sm'}`}>{msg.text}</div>
                  </div>
              ))}
-             {isChatLoading && (
-                 <div className="flex justify-start">
-                     <div className="bg-white/50 p-3 rounded-2xl rounded-bl-none text-xs text-slate-500 animate-pulse">
-                         Thinking...
-                     </div>
-                 </div>
-             )}
+             {isChatLoading && <div className="flex justify-start"><div className="bg-white/50 p-3 rounded-2xl rounded-bl-none text-xs text-slate-500 animate-pulse">Thinking...</div></div>}
          </div>
-
          <div className="p-3 border-t border-white/50 bg-white/30 rounded-b-2xl">
             <form onSubmit={handleChatSubmit} className="flex gap-2">
-                <input 
-                    className="flex-1 bg-white/70 border-none rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-300"
-                    placeholder="Ask Synapse..."
-                    value={chatInput}
-                    onChange={e => setChatInput(e.target.value)}
-                />
-                <button type="submit" className="bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl p-2 transition flex items-center justify-center">
-                    <span className="material-icons text-sm">send</span>
-                </button>
+                <input className="flex-1 bg-white/70 border-none rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-300" placeholder="Ask 2Board..." value={chatInput} onChange={e => setChatInput(e.target.value)} />
+                <button type="submit" className="bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl p-2 transition flex items-center justify-center"><span className="material-icons text-sm">send</span></button>
             </form>
          </div>
       </div>
 
       {!isChatOpen && (
-          <button 
-            onClick={() => setIsChatOpen(true)}
-            className="fixed bottom-6 right-6 w-12 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105 z-40"
-          >
+          <button onClick={() => setIsChatOpen(true)} className="fixed bottom-6 right-6 w-12 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-105 z-40">
               <span className="material-icons">chat_bubble_outline</span>
           </button>
       )}

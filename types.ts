@@ -1,3 +1,4 @@
+
 export type BlockType = 'note' | 'image' | 'video' | 'synthesis' | 'audio' | 'refinement' | 'chat' | 'link' | 'youtube' | 'pdf' | 'rag-db';
 export type BlockStatus = 'todo' | 'in-progress' | 'done';
 
@@ -58,6 +59,12 @@ export interface Workspace {
   blocks: BlockData[];
   connections: Connection[];
   lastModified: number;
+}
+
+export interface UserProfile {
+    name: string;
+    avatar?: string; // URL or initials
+    joinedAt: number;
 }
 
 export enum CanvasMode {
